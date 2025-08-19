@@ -1,74 +1,45 @@
 name: Run MLQA-TSR Pipeline
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:   # Cho phép chạy thủ công
     inputs:
       split:
-        description: "Chọn tập dữ liệu"
+        description: "Chọn tập dữ liệu để chạy"
         required: true
         default: "public_task1"
         type: choice
-        options: [train, public_task1, public_task2]
-  push:
-    branches: [ "main" ]
+        options:
+          - train
+          - public_task1
+          - public_task2
 
 jobs:
-  run:
+  build:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v3
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v4
         with:
-          python-version: "3.11"
+          python-version: "3.9"
 
-      - name: Cache pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
-
-      - name: Install deps
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Download dataset (from secret URL)
-        env:
-          DATASET_URL: ${{ secrets.DATASET_URL }}
-        run: |
-          mkdir -p data_zip
-          if [ -z "$DATASET_URL" ]; then
-            echo "❌ DATASET_URL secret is missing"; exit 1
-          fi
-          echo "Downloading dataset..."
-          curl -L "$DATASET_URL" -o "data_zip/dataset.zip"
-          ls -lh data_zip
-
       - name: Run pipeline
         run: |
-          python scripts/predict.py \
-            --dataset-zip "data_zip/dataset.zip" \
-            --split "${{ github.event.inputs.split || 'public_task1' }}"
+          echo "▶️ Bắt đầu chạy pipeline với split=${{ github.event.inputs.split }}"
+          python scripts/predict.py --split ${{ github.event.inputs.split }}
 
-      - name: Show outputs
-        run: |
-          echo "=== outputs/ ==="
-          ls -lh outputs || true
-          echo "=== Preview (head) ==="
-          if [ -f outputs/submission_task1.json ]; then head -n 50 outputs/submission_task1.json; fi
-          if [ -f outputs/submission_task2.json ]; then head -n 50 outputs/submission_task2.json; fi
-
-      - name: Upload artifact (submission.zip & json)
-        uses: actions/upload-artifact@v4
+      - name: Upload artifacts (submission)
+        uses: actions/upload-artifact@v3
         with:
-          name: submission-${{ github.event.inputs.split || 'public_task1' }}
+          name: submission-${{ github.event.inputs.split }}
           path: |
-            outputs/submission.zip
-            outputs/submission_task1.json
-            outputs/submission_task2.json
-          if-no-files-found: warn
+            submission_${{ github.event.inputs.split }}.json
+            submission.zip
