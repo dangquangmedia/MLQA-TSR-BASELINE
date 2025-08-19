@@ -1,0 +1,8 @@
+__pycache__/
+outputs/
+*.zip
+*.pt
+*.bin
+*.safetensors
+*.onnx
+.env
