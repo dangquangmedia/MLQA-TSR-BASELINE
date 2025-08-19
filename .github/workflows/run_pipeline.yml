@@ -1,4 +1,4 @@
-name: Run MLQA-TSR Pipeline (Robust)
+name: Run MLQA-TSR Pipeline (Universal)
 
 on:
   workflow_dispatch:
@@ -25,7 +25,7 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Python 3.11
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -43,6 +43,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install gdown==5.2.0
+          sudo apt-get update && sudo apt-get install -y zip tree
 
       - name: Resolve dataset URL (from secret)
         id: url
@@ -54,37 +55,98 @@ jobs:
           fi
           echo "url=$DATASET_URL" >> $GITHUB_OUTPUT
 
-      - name: Download dataset ZIP from Google Drive
+      - name: Download dataset (auto-detect ZIP vs FOLDER)
+        id: dl
         env:
           URL: ${{ steps.url.outputs.url }}
         run: |
           set -e
-          mkdir -p data_zip
-          echo "Downloading dataset ZIP ..."
-          # URL là direct link Drive: https://drive.google.com/uc?export=download&id=FILE_ID
-          gdown "$URL" -O data_zip/dataset.zip
-          echo "File type:"
-          file data_zip/dataset.zip
-          if ! file data_zip/dataset.zip | grep -qi "Zip archive"; then
-            echo "❌ Không phải file ZIP. Hãy kiểm tra lại DATASET_URL (direct download)."
-            exit 1
+          mkdir -p data_zip data_root
+
+          echo "URL: $URL"
+          if echo "$URL" | grep -q "/file/"; then
+            echo "Detected: Google Drive FILE → downloading ZIP"
+            gdown "$URL" -O data_zip/dataset.zip
+            file data_zip/dataset.zip || true
+            if ! file data_zip/dataset.zip | grep -qi "Zip archive"; then
+              echo "❌ Not a ZIP file. Check DATASET_URL (must be direct file link)."
+              exit 1
+            fi
+            echo "mode=zip" >> $GITHUB_OUTPUT
+
+          elif echo "$URL" | grep -q "/folders/"; then
+            echo "Detected: Google Drive FOLDER → downloading folder"
+            gdown --folder "$URL" -O data_root
+            echo "Downloaded folder structure:"
+            tree -L 2 data_root || true
+
+            # Tìm thư mục chứa law_db/ (root chuẩn BTC)
+            ROOT_CANDIDATE=$(python - <<'PY'
+import os
+for base, dirs, files in os.walk("data_root"):
+    if "law_db" in dirs and ("train_data" in dirs or "public_test" in dirs):
+        print(base)
+        break
+PY
+)
+            if [ -z "$ROOT_CANDIDATE" ]; then
+              echo "❌ Không tìm thấy thư mục gốc chứa law_db/ trong data_root."
+              exit 1
+            fi
+            echo "ROOT_CANDIDATE=$ROOT_CANDIDATE"
+            echo "mode=root" >> $GITHUB_OUTPUT
+            echo "root_path=$ROOT_CANDIDATE" >> $GITHUB_OUTPUT
+
+          else
+            echo "Assume: direct HTTP ZIP (Dropbox/S3/Drive direct)"
+            curl -fSL --retry 5 --retry-delay 5 --max-time 1800 "$URL" -o data_zip/dataset.zip
+            file data_zip/dataset.zip || true
+            if ! file data_zip/dataset.zip | grep -qi "Zip archive"; then
+              echo "❌ Not a ZIP file (maybe HTML). Check DATASET_URL."
+              exit 1
+            fi
+            echo "mode=zip" >> $GITHUB_OUTPUT
           fi
 
-      - name: Inspect ZIP (liệt kê 200 dòng đầu)
+      - name: Inspect ZIP (if ZIP mode)
+        if: steps.dl.outputs.mode == 'zip'
         run: |
-          sudo apt-get update && sudo apt-get install -y zip
+          echo "Listing first 200 entries in ZIP:"
           zipinfo -1 data_zip/dataset.zip | head -n 200 || true
 
-      - name: Run pipeline
+      - name: Inspect ROOT (if folder mode)
+        if: steps.dl.outputs.mode == 'root'
+        run: |
+          echo "Root candidate: ${{ steps.dl.outputs.root_path }}"
+          tree -L 2 "${{ steps.dl.outputs.root_path }}" || true
+
+      - name: Run pipeline (ZIP)
+        if: steps.dl.outputs.mode == 'zip'
         run: |
           SPLIT="${{ github.event.inputs.split || env.DEFAULT_SPLIT }}"
           echo ">>> Using split: $SPLIT"
-          # predict.py của bạn đã hỗ trợ --dataset-zip
-          python -u scripts/predict.py \
-            --dataset-zip data_zip/dataset.zip \
-            --split "$SPLIT"
+          python -u scripts/predict.py --dataset-zip data_zip/dataset.zip --split "$SPLIT"
+
+      - name: Run pipeline (ROOT)
+        if: steps.dl.outputs.mode == 'root'
+        run: |
+          SPLIT="${{ github.event.inputs.split || env.DEFAULT_SPLIT }}"
+          ROOT="${{ steps.dl.outputs.root_path }}"
+          echo ">>> Using split: $SPLIT"
+          echo ">>> Using dataset-root: $ROOT"
+          python -u scripts/predict.py --dataset-root "$ROOT" --split "$SPLIT"
+
+      - name: Preview outputs
+        if: always()
+        run: |
+          echo "=== outputs/ ==="
+          ls -lah outputs || true
+          for f in outputs/submission_task1.json outputs/submission_task2.json; do
+            if [ -f "$f" ]; then echo "--- head of $f ---"; head -n 40 "$f"; fi
+          done
 
       - name: Upload artifact (submission.zip & json)
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: submission-${{ github.event.inputs.split || env.DEFAULT_SPLIT }}
