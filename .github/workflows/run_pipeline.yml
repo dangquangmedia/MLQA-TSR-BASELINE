@@ -1,1 +1,91 @@
+name: Run MLQA-TSR Pipeline (Robust)
 
+on:
+  workflow_dispatch:
+    inputs:
+      split:
+        description: "Chọn tập dữ liệu"
+        required: true
+        default: "public_task1"
+        type: choice
+        options: [train, public_task1, public_task2]
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      OMP_NUM_THREADS: 1
+      OPENBLAS_NUM_THREADS: 1
+      MKL_NUM_THREADS: 1
+      NUMEXPR_NUM_THREADS: 1
+      DEFAULT_SPLIT: public_task1
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install gdown==5.2.0
+
+      - name: Resolve dataset URL (from secret)
+        id: url
+        env:
+          DATASET_URL: ${{ secrets.DATASET_URL }}
+        run: |
+          if [ -z "$DATASET_URL" ]; then
+            echo "❌ DATASET_URL secret is missing"; exit 1
+          fi
+          echo "url=$DATASET_URL" >> $GITHUB_OUTPUT
+
+      - name: Download dataset with retry
+        env:
+          URL: ${{ steps.url.outputs.url }}
+        run: |
+          set -e
+          mkdir -p data_zip
+          if echo "$URL" | grep -q "drive.google.com"; then
+            gdown "$URL" -O data_zip/dataset.zip
+          else
+            curl -fSL --retry 5 --retry-delay 5 --max-time 1800 "$URL" -o data_zip/dataset.zip
+          fi
+          file data_zip/dataset.zip
+          if ! file data_zip/dataset.zip | grep -qi "Zip archive"; then
+            echo "❌ File tải về không phải ZIP. Kiểm tra DATASET_URL (direct download)."; exit 1; fi
+
+      - name: Inspect ZIP (list 200 dòng đầu)
+        run: |
+          sudo apt-get update && sudo apt-get install -y zip
+          zipinfo -1 data_zip/dataset.zip | head -n 200 || true
+
+      - name: Run pipeline
+        run: |
+          SPLIT="${{ github.event.inputs.split || env.DEFAULT_SPLIT }}"
+          echo ">>> Using split: $SPLIT"
+          python -u scripts/predict.py --dataset-zip data_zip/dataset.zip --split "$SPLIT"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: submission-${{ github.event.inputs.split || env.DEFAULT_SPLIT }}
+          path: |
+            outputs/submission.zip
+            outputs/submission_task1.json
+            outputs/submission_task2.json
+          if-no-files-found: warn
