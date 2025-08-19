@@ -54,22 +54,23 @@ jobs:
           fi
           echo "url=$DATASET_URL" >> $GITHUB_OUTPUT
 
-      - name: Download dataset with retry
+      - name: Download dataset ZIP from Google Drive
         env:
           URL: ${{ steps.url.outputs.url }}
         run: |
           set -e
           mkdir -p data_zip
-          if echo "$URL" | grep -q "drive.google.com"; then
-            gdown "$URL" -O data_zip/dataset.zip
-          else
-            curl -fSL --retry 5 --retry-delay 5 --max-time 1800 "$URL" -o data_zip/dataset.zip
-          fi
+          echo "Downloading dataset ZIP ..."
+          # URL là direct link Drive: https://drive.google.com/uc?export=download&id=FILE_ID
+          gdown "$URL" -O data_zip/dataset.zip
+          echo "File type:"
           file data_zip/dataset.zip
           if ! file data_zip/dataset.zip | grep -qi "Zip archive"; then
-            echo "❌ File tải về không phải ZIP. Kiểm tra DATASET_URL (direct download)."; exit 1; fi
+            echo "❌ Không phải file ZIP. Hãy kiểm tra lại DATASET_URL (direct download)."
+            exit 1
+          fi
 
-      - name: Inspect ZIP (list 200 dòng đầu)
+      - name: Inspect ZIP (liệt kê 200 dòng đầu)
         run: |
           sudo apt-get update && sudo apt-get install -y zip
           zipinfo -1 data_zip/dataset.zip | head -n 200 || true
@@ -78,9 +79,12 @@ jobs:
         run: |
           SPLIT="${{ github.event.inputs.split || env.DEFAULT_SPLIT }}"
           echo ">>> Using split: $SPLIT"
-          python -u scripts/predict.py --dataset-zip data_zip/dataset.zip --split "$SPLIT"
+          # predict.py của bạn đã hỗ trợ --dataset-zip
+          python -u scripts/predict.py \
+            --dataset-zip data_zip/dataset.zip \
+            --split "$SPLIT"
 
-      - name: Upload artifact
+      - name: Upload artifact (submission.zip & json)
         uses: actions/upload-artifact@v4
         with:
           name: submission-${{ github.event.inputs.split || env.DEFAULT_SPLIT }}
